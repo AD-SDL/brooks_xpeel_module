@@ -3,12 +3,8 @@
 import time
 from pathlib import Path
 
-from brooks_xpeel_driver import BROOKS_PEELER_DRIVER
+from peeler_interface import BROOKS_PEELER_DRIVER
 from fastapi.datastructures import State
-from wei.modules.rest_module import RESTModule
-from wei.types.module_types import ModuleState, ModuleStatus
-from wei.types.step_types import ActionRequest, StepResponse, StepSucceeded
-from wei.utils import extract_version
 
 rest_module = RESTModule(
     name="peeler_node",

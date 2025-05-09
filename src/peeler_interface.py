@@ -6,7 +6,7 @@ import time
 import serial
 
 
-class BROOKS_PEELER_DRIVER:
+class Peeler:
     """
     Description:
     Python interface that allows remote commands to be executed to the Peeler.
@@ -404,7 +404,7 @@ if __name__ == "__main__":
     Runs get status function.
     """
 
-    peeler = BROOKS_PEELER_DRIVER("/dev/ttyUSB1")
+    peeler = Peeler("/dev/ttyUSB1")
     peeler.get_status()
     print(peeler.status_msg)
     peeler.seal_check()
