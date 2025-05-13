@@ -1,0 +1,17 @@
+node_name: peeler_node
+node_id: 01JV3HNNEA0216FPE6BBPX1V3N
+node_url: null
+node_description: node for peeler module
+node_type: device
+module_name: peeler_module
+module_version: 0.0.1
+capabilities:
+  set_config: true
+  admin_commands: []
+commands: {}
+is_template: false
+config_defaults:
+  host: localhost
+  port: 3033
+  device_port: /dev/ttyUSB1
+  resource_manager_url: null

@@ -23,7 +23,7 @@ class PeelerNodeConfig(RestNodeConfig):
     """Configuration for the Peeler node."""
 
     device_port: str
-    resource_server_url: Optional[AnyUrl] = None
+    resource_manager_url: Optional[AnyUrl] = None
 
 
 class PeelerNode(RestNode):
@@ -56,7 +56,7 @@ class PeelerNode(RestNode):
                 self.peeler_deck_resource = None
                 self.peel_resource = None
 
-            self.logger.info("Node insitializing...")
+            self.logger.info("Node initializing...")
             self.peeler_interface = Peeler(
                 host_path=self.config.device_port,
                 resource_client=self.resource_client,
