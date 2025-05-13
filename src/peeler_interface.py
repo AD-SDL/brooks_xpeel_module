@@ -12,16 +12,18 @@ class Peeler:
     Python interface that allows remote commands to be executed to the Peeler.
     """
 
-    def __init__(self, host_path, baud_rate=9600):
+    def __init__(self, host_path, baud_rate=9600, resource_client=None, peeler_deck_resource=None, peel_resource=None):
         """
         This function initializes the data to be called and modified in other locations in the client.
         """
 
         self.host_path = host_path
         self.baud_rate = baud_rate
+        self.resource_client = resource_client
+        self.peeler_deck_resource = peeler_deck_resource
+        self.peel_resource = peel_resource
         self.peeler_output = ""
         self.status_msg = ""
-        # self.version = self.check_version()
         self.tape_remaining_var = 0
         self.sensor_threshold_var = 0
         self.error_msg = ""
@@ -38,6 +40,16 @@ class Peeler:
             self.connection = serial.Serial(self.host_path, self.baud_rate)
         except Exception as e:
             raise Exception("Could not establish connection") from e
+
+    def disconnect(self):
+        """
+        Closes the serial connection to the device.
+        """
+        if self.connection and self.connection.is_open:
+            self.connection.close()
+            print("Serial connection closed.")
+        else:
+            print("No open serial connection to close.")
 
     def response_fun(self, time_wait):
         """
@@ -121,13 +133,7 @@ class Peeler:
         if first_error == "00" and second_error == "00" and third_error == "00":
             error_code_msg = "No Errors"
         else:
-            error_code_msg = (
-                error_dict[first_error]
-                + "\n"
-                + error_dict[second_error]
-                + "\n"
-                + error_dict[third_error]
-            )
+            error_code_msg = error_dict[first_error] + "\n" + error_dict[second_error] + "\n" + error_dict[third_error]
 
         self.peeler_output = self.peeler_output + error_code_msg + "\n"
 
@@ -147,8 +153,7 @@ class Peeler:
         msg_beginning = "*"
         msg_end = ":"
         self.status_msg = status_response[
-            status_response.find(msg_beginning)
-            + len(msg_beginning) : status_response.rfind(msg_end)
+            status_response.find(msg_beginning) + len(msg_beginning) : status_response.rfind(msg_end)
         ].upper()
         return status_response
 
@@ -220,6 +225,16 @@ class Peeler:
             peel_dict[param_set_num][1],
         )
         self.send_command(cmd_string, success_msg, err_msg)
+        try:
+            if self.resource_client and self.peel_resource:
+                self.resource_client.increase_quantity(self.peel_resource, 1)
+                if self.peeler_deck_resource:
+                    plate_resource = self.peeler_deck_resource.children[0]
+                    if "seal" in plate_resource.attributes:
+                        plate_resource.attributes.pop("seal", None)
+                    self.resource_client.update_resource(plate_resource)
+        except Exception as e:
+            print(f"Error updating resources: {e}")
         self.movement_state = "READY"
 
     def seal_check(self):
@@ -239,9 +254,7 @@ class Peeler:
         """
         self.movement_state = "BUSY"
         cmd_string = "*tapeleft\r\n"
-        success_msg = (
-            " deseals remaining on supply spool \n deseals remaining on take-up spool"
-        )
+        success_msg = " deseals remaining on supply spool \n deseals remaining on take-up spool"
         err_msg = "Failed to find amount of tape remaining"
         response = self.send_command(cmd_string, success_msg, err_msg)
         self.movement_state = "READY"
@@ -250,15 +263,8 @@ class Peeler:
 
         deseals_supply = int(matches[1]) * 10
         deseals_take = int(matches[2]) * 10
-        self.peeler_output = (
-            self.peeler_output
-            + "Deseals on supply spool: "
-            + str(deseals_supply)
-            + "\n"
-        )
-        self.peeler_output = (
-            self.peeler_output + "Deseals on take-up spool: " + str(deseals_take) + "\n"
-        )
+        self.peeler_output = self.peeler_output + "Deseals on supply spool: " + str(deseals_supply) + "\n"
+        self.peeler_output = self.peeler_output + "Deseals on take-up spool: " + str(deseals_take) + "\n"
         return deseals_supply, deseals_take
 
     def plate_check(self, pc_yn=""):
@@ -284,9 +290,7 @@ class Peeler:
         """
 
         cmd_string = "*sealstat\r\n"
-        success_msg = "Threshold value of %s for the seal detected sensor" % (
-            threshold_value
-        )
+        success_msg = "Threshold value of %s for the seal detected sensor" % (threshold_value)
         err_msg = "Failed to get threshold value"
         response = self.send_command(cmd_string, success_msg, err_msg)
 
@@ -294,23 +298,17 @@ class Peeler:
 
         threshold_value = matches[1]
 
-        self.peeler_output = (
-            self.peeler_output + "Threshold Value: " + threshold_value + "\n"
-        )
+        self.peeler_output = self.peeler_output + "Threshold Value: " + threshold_value + "\n"
         return threshold_value
 
-    def sensor_threshold_higher(
-        self, seal_higher_input="", threshold_value_high="Not Found"
-    ):
+    def sensor_threshold_higher(self, seal_higher_input="", threshold_value_high="Not Found"):
         """
         Sets the seal detected threshold value for the seal present if higher than threshold.
         """
 
         seal_higher_input = input("3 digit threshold value: ")
         cmd_string = "*sealhigher:%s\r\n" % (seal_higher_input)
-        success_msg = "Threshold value of %s for the seal detected sensor" % (
-            threshold_value_high
-        )
+        success_msg = "Threshold value of %s for the seal detected sensor" % (threshold_value_high)
         err_msg = "Failed to get threshold value"
         response = self.send_command(cmd_string, success_msg, err_msg)
 
@@ -318,22 +316,16 @@ class Peeler:
 
         threshold_value_high = matches[1]
 
-        self.peeler_output = (
-            self.peeler_output + "Threshold Value: " + threshold_value_high + "\n"
-        )
+        self.peeler_output = self.peeler_output + "Threshold Value: " + threshold_value_high + "\n"
 
-    def sensor_threshold_lower(
-        self, seal_lower_input="", threshold_value_low="Not Found"
-    ):
+    def sensor_threshold_lower(self, seal_lower_input="", threshold_value_low="Not Found"):
         """
         Sets the seal detected threshold value for the seal present if lower than threshold.
         """
 
         seal_lower_input = input("3 digit threshold value: ")
         cmd_string = "*seallower:%s\r\n" % (seal_lower_input)
-        success_msg = "Threshold value of %s for the seal detected sensor" % (
-            threshold_value_low
-        )
+        success_msg = "Threshold value of %s for the seal detected sensor" % (threshold_value_low)
         err_msg = "Failed to get threshold value"
         response = self.send_command(cmd_string, success_msg, err_msg)
 
@@ -341,9 +333,7 @@ class Peeler:
 
         threshold_value_low = matches[1]
 
-        self.peeler_output = (
-            self.peeler_output + "Threshold Value: " + threshold_value_low + "\n"
-        )
+        self.peeler_output = self.peeler_output + "Threshold Value: " + threshold_value_low + "\n"
 
     def conveyor_out(self):
         """
