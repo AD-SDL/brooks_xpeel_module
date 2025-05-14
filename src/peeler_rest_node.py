@@ -1,7 +1,6 @@
 """REST-based node for Brooks Xpeel device"""
 
 import time
-from typing import Optional
 
 from madsci.client.resource_client import ResourceClient
 from madsci.common.types.action_types import ActionFailed, ActionSucceeded
@@ -14,7 +13,6 @@ from madsci.common.types.resource_types.definitions import (
 )
 from madsci.node_module.helpers import action
 from madsci.node_module.rest_node_module import RestNode
-from pydantic.networks import AnyUrl
 
 from peeler_interface import Peeler
 
@@ -23,21 +21,20 @@ class PeelerNodeConfig(RestNodeConfig):
     """Configuration for the Peeler node."""
 
     device_port: str
-    resource_manager_url: Optional[AnyUrl] = None
 
 
 class PeelerNode(RestNode):
     """A node to control the Brooks Xpeel peeler device."""
 
     peeler_interface: Peeler = None
-    config_model: PeelerNodeConfig
+    config_model = PeelerNodeConfig
 
     def startup_handler(self) -> None:
         """Called to (re)initialize the node. Should be used to open connections to devices or initialize any other resources."""
-
+        print(self.config)
         try:
-            if self.config.resource_manager_url:
-                self.resource_client = ResourceClient(self.config.resource_manager_url)
+            if self.config.resource_server_url:
+                self.resource_client = ResourceClient(url=self.config.resource_server_url)
                 self.resource_owner = OwnershipInfo(node_id=self.node_definition.node_id)
                 self.peeler_deck_resource = self.resource_client.init_resource(
                     SlotResourceDefinition(
