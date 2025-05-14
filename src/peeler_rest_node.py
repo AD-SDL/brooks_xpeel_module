@@ -31,7 +31,6 @@ class PeelerNode(RestNode):
 
     def startup_handler(self) -> None:
         """Called to (re)initialize the node. Should be used to open connections to devices or initialize any other resources."""
-        print(self.config)
         try:
             if self.config.resource_server_url:
                 self.resource_client = ResourceClient(url=self.config.resource_server_url)
