@@ -17,6 +17,8 @@ COPY ./pyproject.toml brooks_xpeel_module/pyproject.toml
 RUN --mount=type=cache,target=/root/.cache \
     pip install -e ./brooks_xpeel_module
 
+RUN usermod -aG dialout madsci
+
 CMD ["python", "brooks_xpeel_module/src/peeler_rest_node.py"]
 
 #########################################

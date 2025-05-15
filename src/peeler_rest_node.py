@@ -1,14 +1,12 @@
 """REST-based node for Brooks Xpeel device"""
 
-import time
-
 from madsci.client.resource_client import ResourceClient
-from madsci.common.types.action_types import ActionFailed, ActionSucceeded
+from madsci.common.types.action_types import ActionResult, ActionSucceeded
 from madsci.common.types.admin_command_types import AdminCommandResponse
 from madsci.common.types.auth_types import OwnershipInfo
 from madsci.common.types.node_types import RestNodeConfig
 from madsci.common.types.resource_types.definitions import (
-    ContinuousConsumableResourceDefinition,
+    DiscreteConsumableResourceDefinition,
     SlotResourceDefinition,
 )
 from madsci.node_module.helpers import action
@@ -21,114 +19,119 @@ class PeelerNodeConfig(RestNodeConfig):
     """Configuration for the Peeler node."""
 
     device_port: str
+    """Which serial port to use for the peeler device."""
+    check_for_plate: bool = False
+    """Whether to check for a plate before peeling."""
 
 
 class PeelerNode(RestNode):
     """A node to control the Brooks Xpeel peeler device."""
 
-    peeler_interface: Peeler = None
+    peeler: Peeler = None
     config_model = PeelerNodeConfig
+    config: PeelerNodeConfig
+    module_version = "1.0.0"
 
     def startup_handler(self) -> None:
         """Called to (re)initialize the node. Should be used to open connections to devices or initialize any other resources."""
-        try:
-            if self.config.resource_server_url:
-                self.resource_client = ResourceClient(url=self.config.resource_server_url)
-                self.resource_owner = OwnershipInfo(node_id=self.node_definition.node_id)
-                self.peeler_deck_resource = self.resource_client.init_resource(
-                    SlotResourceDefinition(
-                        resource_name="peeler_deck",
-                        owner=self.resource_owner,
-                    )
+        if self.config.resource_server_url:
+            self.resource_client = ResourceClient(url=self.config.resource_server_url)
+            self.resource_owner = OwnershipInfo(node_id=self.node_definition.node_id)
+            self.plate_carrier = self.resource_client.init_resource(
+                SlotResourceDefinition(
+                    resource_name=f"{self.node_definition.node_name}_plate_nest",
+                    owner=self.resource_owner,
                 )
-                self.peel_resource = self.resource_client.init_resource(
-                    ContinuousConsumableResourceDefinition(
-                        resource_name="peel",
-                        owner=self.resource_owner,
-                    )
-                )
-            else:
-                self.resource_client = None
-                self.peeler_deck_resource = None
-                self.peel_resource = None
-
-            self.logger.info("Node initializing...")
-            self.peeler_interface = Peeler(
-                host_path=self.config.device_port,
-                resource_client=self.resource_client,
-                peeler_deck_resource=self.peeler_deck_resource,
-                peel_resource=self.peel_resource,
             )
-        except Exception as err:
-            self.logger.log_error(f"Error starting the Peeler Node: {err}")
-            self.startup_has_run = False
+            self.tape_supply = self.resource_client.init_resource(
+                DiscreteConsumableResourceDefinition(
+                    resource_name=f"{self.node_definition.node_name}_tape_supply",
+                    owner=self.resource_owner,
+                )
+            )
+            self.tape_takeup = self.resource_client.init_resource(
+                DiscreteConsumableResourceDefinition(
+                    resource_name=f"{self.node_definition.node_name}_tape_takeup",
+                    owner=self.resource_owner,
+                )
+            )
         else:
-            self.startup_has_run = True
-            self.logger.log("Peeler node initialized!")
+            self.resource_client = None
+            self.plate_carrier = None
+            self.tape_supply = None
+            self.tape_takeup = None
+
+        self.peeler = Peeler(
+            device_path=self.config.device_port,
+            resource_client=self.resource_client,
+            plate_carrier=self.plate_carrier,
+            tape_supply=self.tape_supply,
+            tape_takeup=self.tape_takeup,
+            logger=self.logger,
+        )
+        self.peeler.connect()
+        self.peeler.plate_check(self.config.check_for_plate)
+        try:
+            self.peeler.tape_remaining()
+        except Exception:
+            self.logger.log_error("Error getting tape remaining")
 
     def shutdown_handler(self) -> None:
         """Called to close connections to devices or clean up any other resources."""
         try:
-            self.logger.log("Shutting down Peeler node...")
-            if self.peeler_interface:
-                self.peeler_interface.disconnect()
-                self.logger.log("Peeler node closed!")
-                self.shutdown_has_run = True
-                del self.peeler_interface
-                self.peeler_interface = None
-            else:
-                self.logger.log("Peeler node not initialized, nothing to close.")
+            if self.peeler:
+                del self.peeler
+                self.peeler = None
         except Exception as err:
             self.logger.log_error(f"Error shutting down the Peeler Node: {err}")
 
-    def state_handler(self):
+    def state_handler(self) -> None:
         """Periodically checks the state of the Peeler device and updates the node's state."""
-        if self.peeler_interface:
-            self.peeler_interface.get_status()
+        if self.peeler:
+            self.peeler.get_status()
         else:
             self.logger.log_error("Peeler interface is not initialized")
             return
 
-        if self.peeler_interface.status_msg == 3:
-            self.node_state = {
-                "peeler_status_code": "ERROR",
-            }
-            self.logger.log_error("peeler error")
-        elif self.peeler_interface.status_msg == 0:
-            self.node_state = {
-                "peeler_status_code": "READY",
-            }
-        else:
-            self.node_state = {
-                "peeler_status_code": "UNKNOWN",
-            }
-            self.logger.log_error("peeler status unknown")
+        self.node_state["status_message"] = self.peeler.ready_message.model_dump(
+            mode="json"
+        )
+        if self.peeler.tape_supply:
+            self.node_state["tape_supply"] = self.peeler.tape_supply.quantity
+        if self.peeler.tape_takeup:
+            self.node_state["tape_takeup"] = self.peeler.tape_takeup.quantity
 
-    @action(name="peel", description="Peel a plate peel")
-    def peel(self):
-        """Peel a plate"""
-        try:
-            self.peeler_interface.seal_check()
-            self.peeler_interface.peel(1, 2.5)
-            time.sleep(15)
-        except Exception as err:
-            self.logger.log_error(f"Error during peeling: {err}")
-            return ActionFailed(errors=f"Peeling failed: {err}")
-        else:
-            return ActionSucceeded()
+    @action(name="peel")
+    def peel(self, param_set_num: int = 1, param_time: float = 2.5) -> ActionResult:
+        """
+        Peel a plate seal.
 
-    def reset_peel_resource(self) -> AdminCommandResponse:
-        """Reset the peel resource"""
-        try:
-            if self.resource_client and self.peeler_deck_resource and self.peel_resource:
-                self.resource_client.empty(self.peel_resource)
-            else:
-                return AdminCommandResponse(
-                    success=False, data={"error": "Resource client or resources not initialized"}
-                )
-            return AdminCommandResponse(data={"Peel resource empty"})
-        except Exception:
-            return AdminCommandResponse(success=False)
+        :param param_set_num: The parameter set number to use for peeling.
+
+            1: ["default -2 mm", "fast"]
+            2: ["default -2 mm", "slow"]
+            3: ["default", "fast"]
+            4: ["default", "slow"]
+            5: ["default +2 mm", "fast"]
+            6: ["default +2 mm", "slow"]
+            7: ["default +4 mm", "fast"]
+            8: ["default +4 mm", "slow"]
+            9: ["custom", "custom"]
+
+        :param param_time: The time in seconds to wait for the peel to complete.
+        """
+        self.peeler.peel(param_set_num=param_set_num, param_time=param_time)
+        return ActionSucceeded()
+
+    @action(name="reset_peeler")
+    def reset_peeler(self) -> ActionResult:
+        """Returns elevator and conveyor to home location and gets fresh tape in place to use."""
+        self.peeler.reset()
+
+    def reset(self) -> AdminCommandResponse:
+        """Returns elevator and conveyor to home location and gets fresh tape in place to use."""
+        self.peeler.restart()
+        return super().reset()
 
 
 if __name__ == "__main__":

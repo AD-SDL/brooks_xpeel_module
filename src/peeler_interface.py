@@ -1,9 +1,16 @@
 """Driver code to communicate with and control a Brooks Xpeel Peeler instrument."""
 
 import re
+import threading
 import time
+from typing import Any, Optional
 
 import serial
+from madsci.client.event_client import EventClient
+from madsci.client.resource_client import ResourceClient
+from madsci.common.types.resource_types import DiscreteConsumable, Slot
+
+from peeler_datatypes import ErrorCode, ReadyMessage
 
 
 class Peeler:
@@ -12,381 +19,386 @@ class Peeler:
     Python interface that allows remote commands to be executed to the Peeler.
     """
 
-    def __init__(self, host_path, baud_rate=9600, resource_client=None, peeler_deck_resource=None, peel_resource=None):
+    connection: Optional[serial.Serial] = None
+    ready_message: Optional[ReadyMessage] = None
+    acknowledged: bool = False
+
+    def __init__(
+        self,
+        device_path: str = "/dev/ttyUSB0",
+        baud_rate: int = 9600,
+        resource_client: ResourceClient = None,
+        plate_carrier: Optional[Slot] = None,
+        tape_supply: Optional[DiscreteConsumable] = None,
+        tape_takeup: Optional[DiscreteConsumable] = None,
+        logger: EventClient = None,
+    ) -> None:
         """
         This function initializes the data to be called and modified in other locations in the client.
         """
 
-        self.host_path = host_path
+        self.device_path = device_path
         self.baud_rate = baud_rate
         self.resource_client = resource_client
-        self.peeler_deck_resource = peeler_deck_resource
-        self.peel_resource = peel_resource
-        self.peeler_output = ""
-        self.status_msg = ""
-        self.tape_remaining_var = 0
-        self.sensor_threshold_var = 0
-        self.error_msg = ""
-        self.movement_state = "READY"
-        self.connection = None
-        self.connect_peeler()
+        self.plate_carrier = plate_carrier
+        self.tape_supply = tape_supply
+        self.tape_takeup = tape_takeup
+        self.logger = logger or EventClient()
+        self.serial_lock = threading.Lock()
+        self._device_lock = threading.Lock()
 
-    def connect_peeler(self):
+    def __del__(self) -> None:
+        """
+        Closes the connection to the device when the object is deleted.
+        """
+        self.disconnect()
+
+    def connect(self) -> None:
         """
         Connect to serial port / If wrong port entered inform user
         """
 
-        try:
-            self.connection = serial.Serial(self.host_path, self.baud_rate)
-        except Exception as e:
-            raise Exception("Could not establish connection") from e
+        self.connection = serial.Serial(self.device_path, self.baud_rate)
+        if not self.connection.is_open:
+            raise serial.SerialException("Failed connecting to the device.")
+        self.get_status()
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """
         Closes the serial connection to the device.
         """
         if self.connection and self.connection.is_open:
             self.connection.close()
-            print("Serial connection closed.")
         else:
-            print("No open serial connection to close.")
+            pass
 
-    def response_fun(self, time_wait):
+    @staticmethod
+    def construct_command(command: str, *args: Any) -> str:
         """
-        Records the data outputted by the Peeler and sets it to equal "" if no data is outputted in the provided time.
+        Constructs a command string to be sent to the device.
         """
+        return (
+            f"*{command}\r\n"
+            if not args
+            else f"*{command}:{''.join(map(str, args))}\r\n"
+        )
 
-        response_timer = time.time()
-        while time.time() - response_timer < time_wait:
-            if self.connection.in_waiting != 0:
-                response = self.connection.read_until(expected=b"\r")
-                # print(response)
-                response_string = response.decode("utf-8")
-                break
-            else:
-                response_string = ""
-        # print(response_string)
-        return response_string
+    def read_messages(self) -> list[str]:
+        """
+        Reads messages from the serial port and store results.
+        """
+        if not self.connection or not self.connection.is_open:
+            self.connect_sealer()
 
-    def send_command(self, command, success_msg, err_msg, timeout=1):
+        messages = []
+        with self.serial_lock:
+            try:
+                while self.connection.in_waiting > 0:
+                    message = self.connection.readline().decode("utf-8")
+                    if message:
+                        self.logger.log_info(f"Received message: {message}")
+                        messages.append(self.process_message(message))
+            except serial.SerialException as e:
+                self.logger.error(f"Serial error: {e}")
+            except Exception as e:
+                self.logger.error(f"Error reading messages: {e}")
+        return messages
+
+    def process_message(self, message: str) -> None:
+        """Process messages received from the serial port."""
+
+        # *Remove everything in message before the first '*'
+        star_index = message.find("*")
+        message = message[star_index:].strip()
+
+        if message.startswith("*ready:"):
+            self.ready_message = ReadyMessage.from_message(message)
+        if message.startswith("*ack"):
+            self.acknowledged = True
+        return message
+
+    def send_command(self, command: str, timeout: float = 60) -> str:
         """
         Sends provided command to Peeler and stores data outputted by the peeler.
         Indicates when the confirmation that the Peeler received the command by displaying 'ACK TRUE.'
         """
 
-        self.peeler_output = self.peeler_output + "Command: " + command + "\n"
-        ready_timer = time.time()
-        response_buffer = ""
+        if self.connection is None or not self.connection.is_open:
+            self.connect()
 
-        self.connection.write(command.encode("utf-8"))
+        ready_timer = time.time()
+
+        with self.serial_lock:
+            self.acknowledged = False
+            self.connection.write(command.encode("utf-8"))
 
         # Waits till there is "ready" in the response_buffer indicating
         # the command is done executing.
-        while "ready" not in response_buffer:
-            new_string = self.response_fun(timeout)
-
-            if new_string != "":
-                self.peeler_output = self.peeler_output + new_string + "\n"
-
-            response_buffer = response_buffer + new_string
-
-            # Indicates that command was received
-            if "ack" in new_string:
-                self.peeler_output = self.peeler_output + "ACK TRUE" + "\n"
-
-            if time.time() - ready_timer > 20:
+        messages = []
+        while time.time() - ready_timer < timeout:
+            messages.extend(self.read_messages())
+            if self.ready_message and self.ready_message.message_received > ready_timer:
+                self.logger.log_debug(f"Received ready message: {self.ready_message}")
                 break
 
-        self.error(response_buffer)
+        return messages
 
-        return response_buffer
-
-    def error(self, response_buffer):
-        """
-        Decodes the error message outputted by the peeler.
-        """
-
-        error_dict = {
-            "00": "",
-            "01": "Error: Conveyor motor stalled",
-            "02": "Error: Elevator motor stalled",
-            "03": "Error: Take up spool staled",
-            "04": "Error: Seal not removed",
-            "05": "Error: Illegal Command",
-            "06": "Error: No plate found",
-            "07": "Error: Out of tape, or tape broke",
-            "08": "Error: Parameters not saved",
-            "09": "Error: Stop button pressed while running",
-            "10": "Error: Seal Sensor unplugged or broke",
-            "20": "Error: Less than 30 seals left on the supply roll",
-            "21": "Error: Room for less than 30 seals on take up spool",
-            "51": "Error: Emergency Stop: Power relay is not settable- i.e. cover open, or hardware problem",
-            "52": "Error: Circuitry Fault Detected: Remove Power",
-        }
-
-        response_string = re.search(r"\*ready:(\d+,\d+,\d+)", response_buffer)
-        error_code = response_string[1]
-
-        first_error = error_code[0:2]
-        second_error = error_code[3:5]
-        third_error = error_code[6:8]
-        if first_error == "00" and second_error == "00" and third_error == "00":
-            error_code_msg = "No Errors"
-        else:
-            error_code_msg = error_dict[first_error] + "\n" + error_dict[second_error] + "\n" + error_dict[third_error]
-
-        self.peeler_output = self.peeler_output + error_code_msg + "\n"
-
-        # if "Error:" in error_code_msg:
-        self.error_msg = error_code_msg
-
-    def get_status(self):
+    def get_status(self) -> str:
         """
         Checks if there are currently any errors.
         """
+        with self._device_lock:
+            self.send_command(self.construct_command("stat"))
+        return self.ready_message
 
-        cmd_string = "*stat\r\n"
-        success_msg = "Displaying status:"
-        err_msg = "Displaying status:"
-
-        status_response = self.send_command(cmd_string, success_msg, err_msg)
-        msg_beginning = "*"
-        msg_end = ":"
-        self.status_msg = status_response[
-            status_response.find(msg_beginning) + len(msg_beginning) : status_response.rfind(msg_end)
-        ].upper()
-        return status_response
-
-    def check_version(self):
+    def check_version(self) -> str:
         """
         Checks firmware version number.
         """
+        with self._device_lock:
+            messages = self.send_command(self.construct_command("version"))
+        for message in messages:
+            if message.startswith("*") and not message.startswith("*ready:"):
+                return message[1:]
+        return "Unknown version"
 
-        cmd_string = "*version\r\n"
-        success_msg = "XPeel Firmware Version:"
-        err_msg = "Failed to display XPeel firmware version"
-        response = self.send_command(cmd_string, success_msg, err_msg)
-
-        global matches_ver
-
-        matches_ver = re.search(r"\*(\d+.\d+)", response)
-
-        version = matches_ver[1]
-
-        self.peeler_output = self.peeler_output + "Version = " + version + "\n"
-        return version
-
-    def reset(self):
+    def reset(self) -> bool:
         """
         Returns elevator and conveyor to home location and gets fresh tape in place to use.
         """
-        self.movement_state = "BUSY"
-        cmd_string = "*reset\r\n"
-        success_msg = "Successful reset"
-        err_msg = "Failed to reset"
-        self.send_command(cmd_string, success_msg, err_msg)
-        self.movement_state = "READY"
+        with self._device_lock:
+            self.send_command(self.construct_command("reset"))
+        return self.acknowledged
 
-    def restart(self):
+    def restart(self) -> bool:
         """
         Turns Peeler power off and on.
         """
-        self.movement_state = "BUSY"
-        cmd_string = "*restart\r\n"
-        success_msg = "Successful restart"
-        err_msg = "Failed to restart"
-        self.send_command(cmd_string, success_msg, err_msg)
-        self.movement_state = "READY"
+        with self._device_lock:
+            self.send_command(self.construct_command("restart"))
+        return self.acknowledged
 
-    def peel(self, param_set_num, param_time):
+    def peel(self, param_set_num: int = 1, param_time: float = 2.5) -> None:
         """
         Removes seal based on the parameters given for the location to start peeling, the speed, and adhere time.
         """
-        self.movement_state = "BUSY"
+        with self._device_lock:
+            peel_dict = {
+                1: ["default -2 mm", "fast"],
+                2: ["default -2 mm", "slow"],
+                3: ["default", "fast"],
+                4: ["default", "slow"],
+                5: ["default +2 mm", "fast"],
+                6: ["default +2 mm", "slow"],
+                7: ["default +4 mm", "fast"],
+                8: ["default +4 mm", "slow"],
+                9: ["custom", "custom"],
+            }
+            if param_set_num not in peel_dict:
+                raise ValueError(
+                    f"Invalid parameter set number: {param_set_num}. Must be between 1 and 9."
+                )
 
-        peel_dict = {
-            1: ["default -2 mm", "fast"],
-            2: ["default -2 mm", "slow"],
-            3: ["default", "fast"],
-            4: ["default", "slow"],
-            5: ["default +2 mm", "fast"],
-            6: ["default +2 mm", "slow"],
-            7: ["default +4 mm", "fast"],
-            8: ["default +4 mm", "slow"],
-            9: ["custom", "custom"],
-        }
-        cmd_string = "*xpeel:%s%s\r\n" % (param_set_num, int(param_time / 2.5))
-        success_msg = "Successfully adjusted peel location to %s and speed to %s" % (
-            peel_dict[param_set_num][0],
-            peel_dict[param_set_num][1],
-        )
-        err_msg = "Failed to adjust peel location to %s and speed to %s" % (
-            peel_dict[param_set_num][0],
-            peel_dict[param_set_num][1],
-        )
-        self.send_command(cmd_string, success_msg, err_msg)
+            self.send_command(
+                self.construct_command("xpeel", param_set_num, int(param_time / 2.5))
+            )
+        if not self.acknowledged or any(
+            error != 0 for error in self.ready_message.error_codes
+        ):
+            raise Exception(
+                f"Peel command failed with error codes: {self.ready_message.error_codes}"
+            )
         try:
-            if self.resource_client and self.peel_resource:
-                self.resource_client.increase_quantity(self.peel_resource, 1)
-                if self.peeler_deck_resource:
-                    plate_resource = self.peeler_deck_resource.children[0]
-                    if "seal" in plate_resource.attributes:
-                        plate_resource.attributes.pop("seal", None)
+            if self.resource_client and self.plate_carrier:
+                self.plate_carrier = self.resource_client.get_resource(
+                    self.plate_carrier.resource_id
+                )
+                if self.plate_carrier.children:
+                    plate_resource = self.plate_carrier.children[0]
+                    plate_resource.attributes["sealed"] = False
                     self.resource_client.update_resource(plate_resource)
         except Exception as e:
-            print(f"Error updating resources: {e}")
-        self.movement_state = "READY"
+            self.logger.log_error(
+                f"Failed to update resource client with result of peel: {e}"
+            )
 
-    def seal_check(self):
+    def seal_check(self) -> bool:
         """
         Checks if there is any seal on the plate.
         """
-        self.movement_state = "BUSY"
-        cmd_string = "*sealcheck\r\n"
-        success_msg = "Successful seal check"
-        err_msg = "Failed to conduct seal check"
-        self.send_command(cmd_string, success_msg, err_msg)
-        self.movement_state = "READY"
+        with self._device_lock:
+            self.send_command(self.construct_command("sealcheck"))
+        if not self.acknowledged:
+            raise Exception(
+                f"Seal check command failed with error codes: {self.ready_message.error_codes}"
+            )
+        return self.ready_message.error_codes[0] == ErrorCode.SEAL_NOT_REMOVED
 
-    def tape_remaining(self):
+    def tape_remaining(self) -> tuple[int, int]:
         """
         Checks how much tape is left on the supply spool and take-up spool in deseals.
         """
-        self.movement_state = "BUSY"
-        cmd_string = "*tapeleft\r\n"
-        success_msg = " deseals remaining on supply spool \n deseals remaining on take-up spool"
-        err_msg = "Failed to find amount of tape remaining"
-        response = self.send_command(cmd_string, success_msg, err_msg)
-        self.movement_state = "READY"
+        with self._device_lock:
+            messages = self.send_command(self.construct_command("tapeleft"))
 
-        matches = re.search(r"\*tape:(\d+),(\d+)", response)
+        tape_message = ""
+        for message in messages:
+            if message.startswith("*tape:"):
+                tape_message = message
+                break
+        else:
+            raise ValueError("No response from tape remaining command.")
+
+        matches = re.search(r"\*tape:(\d+),(\d+)", tape_message)
 
         deseals_supply = int(matches[1]) * 10
         deseals_take = int(matches[2]) * 10
-        self.peeler_output = self.peeler_output + "Deseals on supply spool: " + str(deseals_supply) + "\n"
-        self.peeler_output = self.peeler_output + "Deseals on take-up spool: " + str(deseals_take) + "\n"
+        try:
+            if self.resource_client:
+                if self.tape_supply:
+                    self.resource_client.set_quantity(self.tape_supply, deseals_supply)
+                if self.tape_takeup:
+                    self.resource_client.set_quantity(self.tape_takeup, deseals_take)
+        except Exception as e:
+            self.logger.log_error(
+                f"Failed to update resource client with tape remaining: {e}"
+            )
         return deseals_supply, deseals_take
 
-    def plate_check(self, pc_yn=""):
+    def plate_check(self, enable: bool) -> None:
         """
+        Set whether to check for a plate before peeling.
         If plate check set to yes, the XPeel process is prevented from taking place if there is no plate detected on the plate tray.
         """
-        self.movement_state = "BUSY"
-        # pc_yn = y for yes n for no
-        pc_yn = input("Set platecheck to yes (y) or no (n): ")
-        cmd_string = "*platecheck:%s\r\n" % (pc_yn)
-        if pc_yn == "y":
-            pc_yn_string = "yes"
-        if pc_yn == "n":
-            pc_yn_string = "no"
-        success_msg = "Platecheck set to %s" % (pc_yn_string)
-        err_msg = "Failed to set plate check to %s" % (pc_yn_string)
-        self.send_command(cmd_string, success_msg, err_msg)
-        self.movement_state = "READY"
+        with self._device_lock:
+            self.send_command(
+                self.construct_command("platecheck", ("y" if enable else "n"))
+            )
+        if not self.acknowledged:
+            raise Exception(
+                f"Plate check command failed with error codes: {self.ready_message.error_codes}"
+            )
+        return self.acknowledged
 
-    def sensor_threshold(self, threshold_value="Not Found"):
+    def get_sensor_threshold(self) -> str:
         """
         Displays sensor threshold value to ensure that the seal has been removed.
         """
+        with self._device_lock:
+            messages = self.send_command(self.construct_command("sealstat"))
 
-        cmd_string = "*sealstat\r\n"
-        success_msg = "Threshold value of %s for the seal detected sensor" % (threshold_value)
-        err_msg = "Failed to get threshold value"
-        response = self.send_command(cmd_string, success_msg, err_msg)
+        if not self.acknowledged:
+            raise Exception(
+                f"Sensor threshold command failed with error codes: {self.ready_message.error_codes}"
+            )
 
-        matches = re.search(r"\*seal:(\d+)", response)
+        response = ""
+        for message in messages:
+            if message.startswith("*seal:"):
+                response = message
+                break
+        else:
+            raise ValueError("No response from seal status command.")
 
-        threshold_value = matches[1]
+        return re.search(r"\*seal:(\d+)", response)[1]
 
-        self.peeler_output = self.peeler_output + "Threshold Value: " + threshold_value + "\n"
-        return threshold_value
-
-    def sensor_threshold_higher(self, seal_higher_input="", threshold_value_high="Not Found"):
+    def sensor_threshold_higher(self, seal_higher_input: int) -> None:
         """
         Sets the seal detected threshold value for the seal present if higher than threshold.
         """
+        with self._device_lock:
+            messages = self.send_command(
+                self.construct_command(
+                    "sealhigher", str(int(seal_higher_input)).zfill(3)
+                )
+            )
 
-        seal_higher_input = input("3 digit threshold value: ")
-        cmd_string = "*sealhigher:%s\r\n" % (seal_higher_input)
-        success_msg = "Threshold value of %s for the seal detected sensor" % (threshold_value_high)
-        err_msg = "Failed to get threshold value"
-        response = self.send_command(cmd_string, success_msg, err_msg)
+        if not self.acknowledged:
+            raise Exception(
+                f"Sensor threshold higher command failed with error codes: {self.ready_message.error_codes}"
+            )
+        response = ""
+        for message in messages:
+            if message.startswith("*seal:"):
+                response = message
+                break
+        else:
+            raise ValueError("No response from seal status command.")
+        return re.search(r"\*seal:(\d+)", response)[1]
 
-        matches = re.search(r"\*seal:(\d+)", response)
-
-        threshold_value_high = matches[1]
-
-        self.peeler_output = self.peeler_output + "Threshold Value: " + threshold_value_high + "\n"
-
-    def sensor_threshold_lower(self, seal_lower_input="", threshold_value_low="Not Found"):
+    def sensor_threshold_lower(self, seal_lower_input: int) -> None:
         """
         Sets the seal detected threshold value for the seal present if lower than threshold.
         """
+        with self._device_lock:
+            messages = self.send_command(
+                self.construct_command("seallower", str(int(seal_lower_input)).zfill(3))
+            )
+        if not self.acknowledged:
+            raise Exception(
+                f"Sensor threshold lower command failed with error codes: {self.ready_message.error_codes}"
+            )
+        response = ""
+        for message in messages:
+            if message.startswith("*seal:"):
+                response = message
+                break
+        else:
+            raise ValueError("No response from seal status command.")
+        return re.search(r"\*seal:(\d+)", response)[1]
 
-        seal_lower_input = input("3 digit threshold value: ")
-        cmd_string = "*seallower:%s\r\n" % (seal_lower_input)
-        success_msg = "Threshold value of %s for the seal detected sensor" % (threshold_value_low)
-        err_msg = "Failed to get threshold value"
-        response = self.send_command(cmd_string, success_msg, err_msg)
-
-        matches = re.search(r"\*seal:(\d+)", response)
-
-        threshold_value_low = matches[1]
-
-        self.peeler_output = self.peeler_output + "Threshold Value: " + threshold_value_low + "\n"
-
-    def conveyor_out(self):
+    def conveyor_out(self) -> None:
         """
-        Moves the conveyor out.
+        Moves the conveyor out 7mm at a time.
         """
-        self.movement_state = "BUSY"
-        cmd_string = "*moveout\r\n"
-        success_msg = "Successfully moved conveyor out"
-        err_msg = "Failed to move conveyor out"
-        self.send_command(cmd_string, success_msg, err_msg)
-        self.movement_state = "READY"
+        with self._device_lock:
+            self.send_command(self.construct_command("moveout"))
+        if not self.acknowledged:
+            raise Exception(
+                f"Conveyor out command failed with error codes: {self.ready_message.error_codes}"
+            )
 
-    def conveyor_in(self):
+    def conveyor_in(self) -> None:
         """
-        Moves conveyor in.
+        Moves conveyor in to the "begin peel" position.
         """
-        self.movement_state = "BUSY"
-        cmd_string = "*movein\r\n"
-        success_msg = "Successfully moved conveyor in"
-        err_msg = "Failed to move conveyor in"
-        self.send_command(cmd_string, success_msg, err_msg)
-        self.movement_state = "READY"
+        with self._device_lock:
+            self.send_command(self.construct_command("movein"))
+        if not self.acknowledged:
+            raise Exception(
+                f"Conveyor in command failed with error codes: {self.ready_message.error_codes}"
+            )
 
-    def elevator_down(self):
+    def elevator_down(self) -> None:
         """
-        Moves elevator down.
+        Moves elevator down until it is stopped by a plate or the limit switch.
         """
-        self.movement_state = "BUSY"
-        cmd_string = "*movedown\r\n"
-        success_msg = "Successfully moved elevator down"
-        err_msg = "Failed to move elevator down"
-        self.send_command(cmd_string, success_msg, err_msg)
-        self.movement_state = "READY"
+        with self._device_lock:
+            self.send_command(self.construct_command("movedown"))
+        if not self.acknowledged:
+            raise Exception(
+                f"Elevator down command failed with error codes: {self.ready_message.error_codes}"
+            )
 
-    def elevator_up(self):
+    def elevator_up(self) -> None:
         """
-        Moves elevator up.
+        Moves elevator up 1.5 mm at a time until it reaches the top (home) position.
         """
-        self.movement_state = "BUSY"
-        cmd_string = "*moveup\r\n"
-        success_msg = "Successfully moved elevator up"
-        err_msg = "Failed to move elevator up"
-        self.send_command(cmd_string, success_msg, err_msg)
-        self.movement_state = "READY"
+        with self._device_lock:
+            self.send_command(self.construct_command("moveup"))
+        if not self.acknowledged:
+            raise Exception(
+                f"Elevator up command failed with error codes: {self.ready_message.error_codes}"
+            )
 
-    def move_spool(self):
+    def move_spool(self) -> None:
         "Advances the spool 10 mm of tape"
-        self.movement_state = "BUSY"
-        cmd_string = "*movespool\r\n"
-        success_msg = "Successfully moved spool 10 mm"
-        err_msg = "Failed to move spool 10 mm"
-        self.send_command(cmd_string, success_msg, err_msg)
-        self.movement_state = "READY"
+        with self._device_lock:
+            self.send_command(self.construct_command("movespool"))
+        if not self.acknowledged:
+            raise Exception(
+                f"Move spool command failed with error codes: {self.ready_message.error_codes}"
+            )
 
 
 if __name__ == "__main__":
@@ -396,5 +408,4 @@ if __name__ == "__main__":
 
     peeler = Peeler("/dev/ttyUSB1")
     peeler.get_status()
-    print(peeler.status_msg)
     peeler.seal_check()
