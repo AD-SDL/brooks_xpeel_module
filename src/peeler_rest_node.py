@@ -1,9 +1,7 @@
 """REST-based node for Brooks Xpeel device"""
 
-from madsci.client.resource_client import ResourceClient
 from madsci.common.types.action_types import ActionResult, ActionSucceeded
 from madsci.common.types.admin_command_types import AdminCommandResponse
-from madsci.common.types.auth_types import OwnershipInfo
 from madsci.common.types.node_types import RestNodeConfig
 from madsci.common.types.resource_types.definitions import (
     DiscreteConsumableResourceDefinition,
@@ -29,34 +27,28 @@ class PeelerNode(RestNode):
 
     peeler: Peeler = None
     config_model = PeelerNodeConfig
-    config: PeelerNodeConfig
-    module_version = "1.0.0"
+    config: PeelerNodeConfig = PeelerNodeConfig()
+    module_version = "1.1.0"
 
     def startup_handler(self) -> None:
         """Called to (re)initialize the node. Should be used to open connections to devices or initialize any other resources."""
-        if self.config.resource_server_url:
-            self.resource_client = ResourceClient(url=self.config.resource_server_url)
-            self.resource_owner = OwnershipInfo(node_id=self.node_definition.node_id)
+        if self.resource_client:
             self.plate_carrier = self.resource_client.init_resource(
                 SlotResourceDefinition(
                     resource_name=f"{self.node_definition.node_name}_plate_nest",
-                    owner=self.resource_owner,
                 )
             )
             self.tape_supply = self.resource_client.init_resource(
                 DiscreteConsumableResourceDefinition(
                     resource_name=f"{self.node_definition.node_name}_tape_supply",
-                    owner=self.resource_owner,
                 )
             )
             self.tape_takeup = self.resource_client.init_resource(
                 DiscreteConsumableResourceDefinition(
                     resource_name=f"{self.node_definition.node_name}_tape_takeup",
-                    owner=self.resource_owner,
                 )
             )
         else:
-            self.resource_client = None
             self.plate_carrier = None
             self.tape_supply = None
             self.tape_takeup = None

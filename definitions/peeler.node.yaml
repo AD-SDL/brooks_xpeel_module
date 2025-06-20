@@ -1,11 +1,7 @@
 node_name: peeler
-node_url: null
+node_id: 01JY7QX36K24PCBX3ATXN9K45F
 node_description: A node definition for peeler node
 node_type: device
 module_name: brooks_xpeel_module
-module_version: 1.0.0
+module_version: 1.1.0
 capabilities: null
-commands: {}
-is_template: true
-config_defaults:
-  port: 2001
