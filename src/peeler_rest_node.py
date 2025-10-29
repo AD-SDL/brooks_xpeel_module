@@ -1,11 +1,12 @@
 """REST-based node for Brooks Xpeel device"""
 
-from madsci.common.types.action_types import ActionResult, ActionSucceeded
+from typing import Annotated
+
 from madsci.common.types.admin_command_types import AdminCommandResponse
 from madsci.common.types.node_types import RestNodeConfig
-from madsci.common.types.resource_types.definitions import (
-    DiscreteConsumableResourceDefinition,
-    SlotResourceDefinition,
+from madsci.common.types.resource_types import (
+    DiscreteConsumable,
+    Slot,
 )
 from madsci.node_module.helpers import action
 from madsci.node_module.rest_node_module import RestNode
@@ -32,26 +33,8 @@ class PeelerNode(RestNode):
 
     def startup_handler(self) -> None:
         """Called to (re)initialize the node. Should be used to open connections to devices or initialize any other resources."""
-        if self.resource_client:
-            self.plate_carrier = self.resource_client.init_resource(
-                SlotResourceDefinition(
-                    resource_name=f"{self.node_definition.node_name}_plate_nest",
-                )
-            )
-            self.tape_supply = self.resource_client.init_resource(
-                DiscreteConsumableResourceDefinition(
-                    resource_name=f"{self.node_definition.node_name}_tape_supply",
-                )
-            )
-            self.tape_takeup = self.resource_client.init_resource(
-                DiscreteConsumableResourceDefinition(
-                    resource_name=f"{self.node_definition.node_name}_tape_takeup",
-                )
-            )
-        else:
-            self.plate_carrier = None
-            self.tape_supply = None
-            self.tape_takeup = None
+        self.init_resource_templates()
+        self.create_resources()
 
         self.peeler = Peeler(
             device_path=self.config.device_port,
@@ -67,6 +50,58 @@ class PeelerNode(RestNode):
             self.peeler.tape_remaining()
         except Exception:
             self.logger.log_error("Error getting tape remaining")
+
+    def init_resource_templates(self) -> None:
+        """Initialize resource templates used by this node module."""
+
+        self.resource_client.create_template(
+            resource=Slot(
+                resource_class="brooks_xpeel_plate_nest",
+                resource_description="The plate nest/carriage for a brooks xpeel peeler",
+            ),
+            template_name="brooks_xpeel_plate_nest",
+            description="Template of a plate nest/carriage for a brooks xpeel peeler",
+            tags=["PlateNest", "ANSI/SLAS"],
+        )
+        self.resource_client.create_template(
+            resource=DiscreteConsumable(
+                resource_class="brooks_xpeel_tape_supply",
+                resource_description="A tape supply roll for a brooks xpeel peeler",
+                quantity=1000,
+                capacity=1000,
+                unit="peels",
+            ),
+            template_name="brooks_xpeel_tape_supply",
+            description="Template a brooks xpeel peeler's tape supply roll",
+            tags=["PeelTapeRoll", "Supply"],
+        )
+        self.resource_client.create_template(
+            resource=DiscreteConsumable(
+                resource_class="brooks_xpeel_tape_takeup",
+                resource_description="A tape takeup roll for a brooks xpeel peeler",
+                quantity=0,
+                capacity=1000,
+                unit="seals",
+            ),
+            template_name="brooks_xpeel_tape_takeup",
+            description="Template of a brooks xpeel peeler's tape takeup roll",
+            tags=["PeelTakeupRoll", "Supply"],
+        )
+
+    def create_resources(self) -> None:
+        """Create resources used by this node."""
+        self.plate_carrier = self.resource_client.create_resource_from_template(
+            "brooks_xpeel_plate_nest",
+            resource_name=f"{self.node_definition.node_name}_plate_nest",
+        )
+        self.tape_supply = self.resource_client.create_resource_from_template(
+            template_name="brooks_xpeel_tape_supply",
+            resource_name=f"{self.node_definition.node_name}_tape_supply",
+        )
+        self.tape_takeup = self.resource_client.create_resource_from_template(
+            template_name="brooks_xpeel_tape_takeup",
+            resource_name=f"{self.node_definition.node_name}_tape_takeup",
+        )
 
     def shutdown_handler(self) -> None:
         """Called to close connections to devices or clean up any other resources."""
@@ -94,7 +129,13 @@ class PeelerNode(RestNode):
             self.node_state["tape_takeup"] = self.peeler.tape_takeup.quantity
 
     @action(name="peel")
-    def peel(self, param_set_num: int = 1, param_time: float = 2.5) -> ActionResult:
+    def peel(
+        self,
+        param_set_num: Annotated[int, "Parameter set number to use for peeling"] = 1,
+        param_time: Annotated[
+            float, "The time in seconds to wait for a peel to complete"
+        ] = 2.5,
+    ) -> None:
         """
         Peel a plate seal.
 
@@ -113,15 +154,10 @@ class PeelerNode(RestNode):
         :param param_time: The time in seconds to wait for the peel to complete.
         """
         self.peeler.peel(param_set_num=param_set_num, param_time=param_time)
-        return ActionSucceeded()
-
-    @action(name="reset_peeler")
-    def reset_peeler(self) -> ActionResult:
-        """Returns elevator and conveyor to home location and gets fresh tape in place to use."""
-        self.peeler.reset()
 
     def reset(self) -> AdminCommandResponse:
         """Returns elevator and conveyor to home location and gets fresh tape in place to use."""
+        self.peeler.reset()
         self.peeler.restart()
         return super().reset()
 
