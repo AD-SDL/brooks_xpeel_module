@@ -1,9 +1,9 @@
 """Driver code to communicate with and control a Brooks Xpeel Peeler instrument."""
 
-from datetime import datetime
 import re
 import threading
 import time
+from datetime import datetime
 from typing import Any, Optional
 
 import serial
@@ -217,11 +217,19 @@ class Peeler:
                 )
                 with self.resource_client.lock(self.plate_carrier):
                     if self.plate_carrier.children:
-                        if not self.plate_carrier.children[0].attributes.get("seal_info", None):
+                        if not self.plate_carrier.children[0].attributes.get(
+                            "seal_info", None
+                        ):
                             self.plate_carrier.children[0].attributes["seal_info"] = {}
-                        self.plate_carrier.children[0].attributes["seal_info"]["sealed"] = False
-                        self.plate_carrier.children[0].attributes["seal_info"]["peeled_by"] = get_current_ownership_info().model_dump(mode="json")
-                        self.plate_carrier.children[0].attributes["seal_info"]["peel_time"] = datetime.astimezone()
+                        self.plate_carrier.children[0].attributes["seal_info"][
+                            "sealed"
+                        ] = False
+                        self.plate_carrier.children[0].attributes["seal_info"][
+                            "peeled_by"
+                        ] = get_current_ownership_info().model_dump(mode="json")
+                        self.plate_carrier.children[0].attributes["seal_info"][
+                            "peel_time"
+                        ] = datetime.astimezone()
         except Exception as e:
             self.logger.log_error(
                 f"Failed to update resource client with result of peel: {e}"
