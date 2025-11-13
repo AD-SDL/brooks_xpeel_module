@@ -8,12 +8,12 @@ services:
     environment:
       - USER_ID=${USER_ID:-1000}
       - GROUP_ID=${GROUP_ID:-1000}
+      - NODE_DEVICE_PORT=/dev/ttyUSB4
     build:
       context: .
       dockerfile: Dockerfile
       tags:
         - ghcr.io/ad-sdl/brooks_xpeel_module:latest
         - ghcr.io/ad-sdl/brooks_xpeel_module:dev
-    command: python -m peeler_rest_node --node_definition /home/madsci/definitions/peeler.node.yaml --device_port /dev/ttyUSB4
     volumes:
       - ./definitions:/home/madsci/definitions/
