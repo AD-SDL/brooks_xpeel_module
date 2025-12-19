@@ -39,7 +39,7 @@ class PeelerNode(RestNode):
         self.peeler = Peeler(
             device_path=self.config.device_port,
             resource_client=self.resource_client,
-            plate_carrier=self.plate_carrier,
+            nest=self.nest,
             tape_supply=self.tape_supply,
             tape_takeup=self.tape_takeup,
             logger=self.logger,
@@ -56,16 +56,14 @@ class PeelerNode(RestNode):
 
         self.resource_client.create_template(
             resource=Slot(
-                resource_class="brooks_xpeel_plate_nest",
-                resource_description="The plate nest/carriage for a brooks xpeel peeler",
+                resource_description="The plate nest for a brooks xpeel peeler",
             ),
             template_name="brooks_xpeel_plate_nest",
-            description="Template of a plate nest/carriage for a brooks xpeel peeler",
+            description="Template of a plate nest for a brooks xpeel peeler",
             tags=["PlateNest", "ANSI/SLAS"],
         )
         self.resource_client.create_template(
             resource=DiscreteConsumable(
-                resource_class="brooks_xpeel_tape_supply",
                 resource_description="A tape supply roll for a brooks xpeel peeler",
                 quantity=1000,
                 capacity=1000,
@@ -77,7 +75,6 @@ class PeelerNode(RestNode):
         )
         self.resource_client.create_template(
             resource=DiscreteConsumable(
-                resource_class="brooks_xpeel_tape_takeup",
                 resource_description="A tape takeup roll for a brooks xpeel peeler",
                 quantity=0,
                 capacity=1000,
@@ -90,17 +87,17 @@ class PeelerNode(RestNode):
 
     def create_resources(self) -> None:
         """Create resources used by this node."""
-        self.plate_carrier = self.resource_client.create_resource_from_template(
+        self.nest = self.resource_client.create_resource_from_template(
             "brooks_xpeel_plate_nest",
-            resource_name=f"{self.node_definition.node_name}_plate_nest",
+            resource_name=f"{self.node_definition.node_name}.nest",
         )
         self.tape_supply = self.resource_client.create_resource_from_template(
             template_name="brooks_xpeel_tape_supply",
-            resource_name=f"{self.node_definition.node_name}_tape_supply",
+            resource_name=f"{self.node_definition.node_name}.tape_supply",
         )
         self.tape_takeup = self.resource_client.create_resource_from_template(
             template_name="brooks_xpeel_tape_takeup",
-            resource_name=f"{self.node_definition.node_name}_tape_takeup",
+            resource_name=f"{self.node_definition.node_name}.tape_takeup",
         )
 
     def shutdown_handler(self) -> None:

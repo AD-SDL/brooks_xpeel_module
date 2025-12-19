@@ -30,7 +30,7 @@ class Peeler:
         device_path: str = "/dev/ttyUSB0",
         baud_rate: int = 9600,
         resource_client: ResourceClient = None,
-        plate_carrier: Optional[Slot] = None,
+        nest: Optional[Slot] = None,
         tape_supply: Optional[DiscreteConsumable] = None,
         tape_takeup: Optional[DiscreteConsumable] = None,
         logger: EventClient = None,
@@ -42,7 +42,7 @@ class Peeler:
         self.device_path = device_path
         self.baud_rate = baud_rate
         self.resource_client = resource_client
-        self.plate_carrier = plate_carrier
+        self.nest = nest
         self.tape_supply = tape_supply
         self.tape_takeup = tape_takeup
         self.logger = logger or EventClient()
@@ -211,25 +211,19 @@ class Peeler:
                 f"Peel command failed with error codes: {self.ready_message.error_codes}"
             )
         try:
-            if self.resource_client and self.plate_carrier:
-                self.plate_carrier = self.resource_client.get_resource(
-                    self.plate_carrier.resource_id
-                )
-                with self.resource_client.lock(self.plate_carrier):
-                    if self.plate_carrier.children:
-                        if not self.plate_carrier.children[0].attributes.get(
-                            "seal_info", None
-                        ):
-                            self.plate_carrier.children[0].attributes["seal_info"] = {}
-                        self.plate_carrier.children[0].attributes["seal_info"][
-                            "sealed"
-                        ] = False
-                        self.plate_carrier.children[0].attributes["seal_info"][
-                            "peeled_by"
-                        ] = get_current_ownership_info().model_dump(mode="json")
-                        self.plate_carrier.children[0].attributes["seal_info"][
-                            "peel_time"
-                        ] = datetime.astimezone()
+            if self.resource_client and self.nest:
+                self.nest = self.resource_client.get_resource(self.nest.resource_id)
+                with self.resource_client.lock(self.nest):
+                    if self.nest.children:
+                        if not self.nest.children[0].attributes.get("seal_info", None):
+                            self.nest.children[0].attributes["seal_info"] = {}
+                        self.nest.children[0].attributes["seal_info"]["sealed"] = False
+                        self.nest.children[0].attributes["seal_info"]["peeled_by"] = (
+                            get_current_ownership_info().model_dump(mode="json")
+                        )
+                        self.nest.children[0].attributes["seal_info"]["peel_time"] = (
+                            datetime.astimezone()
+                        )
         except Exception as e:
             self.logger.log_error(
                 f"Failed to update resource client with result of peel: {e}"
