@@ -89,15 +89,15 @@ class PeelerNode(RestNode):
         """Create resources used by this node."""
         self.nest = self.resource_client.create_resource_from_template(
             "brooks_xpeel_plate_nest",
-            resource_name=f"{self.node_definition.node_name}.nest",
+            resource_name=f"{self.node_info.node_name}.nest",
         )
         self.tape_supply = self.resource_client.create_resource_from_template(
             template_name="brooks_xpeel_tape_supply",
-            resource_name=f"{self.node_definition.node_name}.tape_supply",
+            resource_name=f"{self.node_info.node_name}.tape_supply",
         )
         self.tape_takeup = self.resource_client.create_resource_from_template(
             template_name="brooks_xpeel_tape_takeup",
-            resource_name=f"{self.node_definition.node_name}.tape_takeup",
+            resource_name=f"{self.node_info.node_name}.tape_takeup",
         )
 
     def shutdown_handler(self) -> None:
