@@ -1,20 +1,19 @@
-name: brooks_xpeel_module
+name: brook_peeler_module
 services:
-  brooks_xpeel_module:
-    container_name: brooks_xpeel_module
-    image: ${IMAGE}
+  brooks_peeler:
+    container_name: brooks_peeler
+    image: ghcr.io/ad-sdl/brooks_xpeel_module
+    network_mode: host
+    privileged: true
+    environment:
+      - USER_ID=${USER_ID:-1000}
+      - GROUP_ID=${GROUP_ID:-1000}
+      - NODE_DEVICE_PORT=/dev/ttyUSB4
     build:
       context: .
       dockerfile: Dockerfile
       tags:
-        - ${IMAGE}:latest
-        - ${IMAGE}:dev
-    command: python -m brooks_xpeel_rest_node --port 2001 --device ${XPEEL_DEVICE}
-    privileged: true
-    env_file: .env
+        - ghcr.io/ad-sdl/brooks_xpeel_module:latest
+        - ghcr.io/ad-sdl/brooks_xpeel_module:dev
     volumes:
-      - /dev:/dev
-      - ./src:/home/app/brooks_xpeel_module/src
-      - ./tests:/home/app/brooks_xpeel_module/tests
-    ports:
-      - 2001:2001
+      - ./definitions:/home/madsci/definitions/

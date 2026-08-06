@@ -1,6 +1,6 @@
 # Brooks XPeel Module
 
-Provides a python driver and WEI-compatible REST interface for the Brooks XPeel peeler instrument.
+Provides a python driver and MADSci-compatible REST interface for the Brooks XPeel peeler instrument.
 
 ## Current Features
 
@@ -22,10 +22,10 @@ python -m venv .venv && src .venv/bin/activate
 pip install -e .
 ```
 
-To run the WEI REST node, use the following command (updating arguments as needed)
+To run the MADSci REST node, use the following command (updating arguments as needed)
 
 ```
-python -m brooks_xpeel_rest_node --port 2001 --device /dev/ttyUSB0
+python -m peeler_rest_node --port 2001 --device /dev/ttyUSB0
 ```
 
 ### Docker Installation
