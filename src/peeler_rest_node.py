@@ -53,7 +53,7 @@ class PeelerNode(RestNode):
                 },
             },
             required_overrides=[],
-            tags=["plate_reader", "carriage"],
+            tags=["carriage"],
             version="1.0.0",
             description="Peeler carriage representation with capacity",
         ),
